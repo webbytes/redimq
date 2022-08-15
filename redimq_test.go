@@ -12,13 +12,17 @@ import (
 var redisClient *redis.Client
 var mock redismock.ClientMock
 var client *MQClient
-var clientError error
+var topic *Topic
+var gmt *GroupedMessageTopic
+var clientError, topicError, gmtError error
 
 
 func setupTest() {
 	redisClient, mock = redismock.NewClientMock()
 	mock.ExpectPing().SetVal("PONG")
 	client, clientError = NewMQClient(context.TODO(), redisClient)
+	topic, topicError = client.NewTopic("test")
+	gmt, gmtError = client.NewGroupedMessageTopic("test")
 }
 
 func TestMain(m *testing.M) {

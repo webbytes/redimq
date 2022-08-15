@@ -7,9 +7,10 @@ import (
 )
 
 func TestNewTopic(t *testing.T) {
+	mock.ExpectSAdd("redimq:" + string(UngroupedMessages), "test").SetVal(1)
 	topic, err := client.NewTopic("test")
 	if err != nil {
-		t.Error("Topic creation returned error")
+		t.Error("Topic creation returned error", err)
 	}
 	if topic == nil {
 		t.Error("Topic creation failed")
@@ -20,9 +21,10 @@ func TestNewTopic(t *testing.T) {
 }
 
 func TestNewGroupedMessageTopic(t *testing.T) {
+	mock.ExpectSAdd("redimq:" + string(GroupedMessages), "test").SetVal(1)
 	topic, err := client.NewGroupedMessageTopic("test")
 	if err != nil {
-		t.Error("GroupedMessageTopic creation returned error")
+		t.Error("GroupedMessageTopic creation returned error", err)
 	}
 	if topic == nil {
 		t.Error("GroupedMessageTopic creation failed")
@@ -35,7 +37,7 @@ func TestNewGroupedMessageTopic(t *testing.T) {
 
 func TestGetAllUngroupedMessageTopics(t *testing.T) {
 	result := []string{"test"}
-	mock.ExpectSMembers("redimq:ungroupedmessagetopics").SetVal(result)
+	mock.ExpectSMembers("redimq:" + string(UngroupedMessages)).SetVal(result)
 	topics, err := client.GetAllUngroupedMessageTopics()
 	if err != nil {
 		t.Error("GetAllTopics returned error", err)
@@ -59,7 +61,7 @@ func TestFindUngroupedMessageTopics(t *testing.T) {
 	cursors := rand.Perm(len(result))
 	i := 0
 	for {
-		mock.ExpectSScan("redimq:ungroupedmessagetopics", cursor, pattern, count).SetVal(result[i:i+int(count)], uint64(cursors[i]))
+		mock.ExpectSScan("redimq:" + string(UngroupedMessages), cursor, pattern, count).SetVal(result[i:i+int(count)], uint64(cursors[i]))
 		i = i + int(count)
 		topics, cursor, err = client.FindUngroupedMessageTopics(&pattern, count, cursor)
 		if err != nil {
@@ -80,7 +82,7 @@ func TestFindUngroupedMessageTopics(t *testing.T) {
 
 func TestGetGroupedMessageTopics(t *testing.T) {
 	result := []string{"test"}
-	mock.ExpectSMembers("redimq:groupedmessagetopics").SetVal(result)
+	mock.ExpectSMembers("redimq:" + GroupedMessages).SetVal(result)
 	topics, err := client.GetAllGroupedMessageTopics()
 	if err != nil {
 		t.Error("GetAllGroupedMessageTopics returned error", err)
@@ -105,7 +107,7 @@ func TestFindGroupedMessageTopics(t *testing.T) {
 	cursors := rand.Perm(len(result))
 	i := 0
 	for {
-		mock.ExpectSScan("redimq:groupedmessagetopics", cursor, pattern, count).SetVal(result[i:i+int(count)], uint64(cursors[i]))
+		mock.ExpectSScan("redimq:" + GroupedMessages, cursor, pattern, count).SetVal(result[i:i+int(count)], uint64(cursors[i]))
 		i = i + int(count)
 		topics, cursor, err = client.FindGroupedMessageTopics(&pattern, count, cursor)
 		if err != nil {
