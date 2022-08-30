@@ -48,7 +48,7 @@ func TestConsumeMessagesFromGroupedMessageTopic(t *testing.T) {
 		Messages: []string { "12345" },
 	})
 	mock.ExpectXReadGroup(args).SetVal([]redis.XStream{ *resStream })
-	msgs, err := mg.ConsumeMessages(count)
+	msgs, err := mg.ConsumeMessage()
 	if err != nil {
 		t.Error("GetAndLockMessageGroup failed", err)
 	}
