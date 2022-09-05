@@ -16,7 +16,7 @@ type Topic struct {
 	MQClient
 }
 
-func (t *Topic) getMinId(ts time.Duration) string {
+func getMinId(ts time.Duration) string {
 	return fmt.Sprint(time.Now().Add(-1 * ts).UnixMilli())
 }
 /// execute XADD queue:messages:MESSAGE_KEY MAXLEN ~ 10000 * <...data>
@@ -25,9 +25,10 @@ func (t *Topic) PublishMessage(m *Message) error {
 		Stream: t.StreamKey,
 		Values: m.Data,
 		NoMkStream: false,
+		ID: "*",
 	}
 	if t.Retention != nil {
-		args.MinID = t.getMinId(*t.Retention)
+		args.MinID = getMinId(*t.Retention)
 		args.Approx = true
 	}
 	if t.MaxLen != nil {
@@ -46,15 +47,21 @@ func (t *Topic) Delete() error {
 }
 
 func (t *Topic) ConsumeMessages(consumerGroupName string, consumerName string, count int64) ([]*Message, error) {
+	_, err := t.MQClient.rc.XGroupCreate(t.MQClient.c, t.StreamKey, consumerGroupName, "0-0").Result()
+	if err != nil {
+		println("group creation error - ", err.Error())
+	}
 	res, err := claimStuckStreamMessages(t.MQClient, consumerGroupName, consumerName, count, t.StreamKey, t.MaxIdleTimeForMessages)
 	if err != nil {
-		return nil, err
+		println("claim stuck message error - ", err.Error())
+		//return nil, err
 	}
 	msgs := xMessageArrayToMessageArray(res, *t, consumerGroupName, consumerName)
 	remainingCount := count - int64(len(res))
 	if remainingCount > 0 {
-		res, err := readNewStreamMessages(t.MQClient, consumerGroupName, consumerName, remainingCount, t.StreamKey)
+		res, err = readNewMessageFromStream(t.MQClient, consumerGroupName, consumerName, remainingCount, t.StreamKey)
 		if err != nil {
+			println("read new messages error - ", err.Error())
 			return msgs, err
 		}
 		msgs = append(msgs, xMessageArrayToMessageArray(res, *t, consumerGroupName, consumerName)...)

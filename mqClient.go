@@ -21,23 +21,65 @@ type MQClient struct {
 	rc *redis.Client
 }
 
+type TopicOptions struct {
+	MaxRetentionDuration *string
+	MaxLength *int64
+	MaxIdleTimeForMessages *string
+}
+
 type TopicType string
 const (
 	UngroupedMessages TopicType = "umts"
-	GroupedMessages  = "gmts"
+	GroupedMessages  TopicType = "gmts"
 )
 
-func (c *MQClient) NewTopic(name string) (*Topic, error) {
-	idle, _ := time.ParseDuration(DefaultMaxIdleTimeForMessage)
-	topic := &Topic { StreamKey: "redimq:umts:" + name, Name: name, MQClient: *c, MaxIdleTimeForMessages: idle, NeedsAcknowledgements: true }
-	_,err := c.rc.SAdd(c.c, "redimq:umts", topic.Name).Result()
+func (c *MQClient) NewTopic(name string, options *TopicOptions) (*Topic, error) {
+	if options == nil {
+		options = &TopicOptions {
+			MaxIdleTimeForMessages: &DefaultMaxIdleTimeForMessage,
+		}
+	} else if options.MaxIdleTimeForMessages == nil {
+		options.MaxIdleTimeForMessages = &DefaultMaxIdleTimeForMessage
+	}
+	idle, err := time.ParseDuration(*options.MaxIdleTimeForMessages)
+	topic := &Topic { 
+		StreamKey: "redimq:umts:" + name, 
+		Name: name, 
+		MQClient: *c, 
+		MaxIdleTimeForMessages: idle, 
+		NeedsAcknowledgements: true,
+	}
 	return topic, err
 }
 
-func (c *MQClient) NewGroupedMessageTopic(name string) (*GroupedMessageTopic, error) {
-	topic := &GroupedMessageTopic { MessageGroupStreamKey: "redimq:gmts:" + name + ":message-groups", Name: name, MQClient: *c }
-	_,err := c.rc.SAdd(c.c, "redimq:gmts", topic.Name).Result()
+func (c *MQClient) NewGroupedMessageTopic(name string, options *TopicOptions) (*GroupedMessageTopic, error) {
+	if options == nil {
+		options = &TopicOptions {
+			MaxIdleTimeForMessages: &DefaultMaxIdleTimeForMessage,
+		}
+	} else if options.MaxIdleTimeForMessages == nil {
+		options.MaxIdleTimeForMessages = &DefaultMaxIdleTimeForMessage
+	}
+	idle, err := time.ParseDuration(*options.MaxIdleTimeForMessages)
+	topic := &GroupedMessageTopic { 
+		StreamPrefix: "redimq:gmts:" + name,
+		MessageGroupStreamKey: "redimq:gmts:" + name + ":message-groups", 
+		MessageCountKey: "redimq:gmts:" + name + ":message-count", 
+		Name: name, 
+		MQClient: *c,
+		MaxIdleTimeForMessages: idle,
+	}
 	return topic, err
+}
+
+func (c *MQClient) createGroupAndConsumer(stream string, consumerGroupName string, consumerName string) error {
+	// consumerKey := "redimq:gmts:" + topicName + ":cg:" + consumerGroupName + ":consumers:" + consumerName
+	// duration, _ := time.ParseDuration("5m")
+	// _,err := c.rc.SetNX(c.c, consumerKey, 1, 0).Result()
+	// _,err = c.rc.Expire(c.c, consumerKey, duration).Result()
+	_,err := c.rc.XGroupCreateMkStream(c.c, stream, consumerGroupName, "0").Result()
+	_,err = c.rc.XGroupCreateConsumer(c.c, stream, consumerGroupName, consumerName).Result()
+	return err
 }
 
 func (c *MQClient) getTopics(topicType TopicType) ([]string, error) {
@@ -103,3 +145,4 @@ func (c *MQClient) FindGroupedMessageTopics(pattern *string, count int64, cursor
 	}
 	return topics, cur, err
 }
+

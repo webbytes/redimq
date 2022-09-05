@@ -6,11 +6,11 @@ import (
 	"testing"
 
 	"github.com/go-redis/redis/v8"
-	"github.com/go-redis/redismock/v8"
+	// "github.com/go-redis/redismock/v8"
 )
 
 var redisClient *redis.Client
-var mock redismock.ClientMock
+// var mock redismock.ClientMock
 var client *MQClient
 var topic *Topic
 var gmt *GroupedMessageTopic
@@ -18,11 +18,16 @@ var clientError, topicError, gmtError error
 
 
 func setupTest() {
-	redisClient, mock = redismock.NewClientMock()
-	mock.ExpectPing().SetVal("PONG")
+	// redisClient, mock = redismock.NewClientMock()
+	redisClient = redis.NewClient(&redis.Options{
+        Addr:     "localhost:36379",
+        Password: "", // no password set
+        DB:       0,  // use default DB
+    })
+	// mock.ExpectPing().SetVal("PONG")
 	client, clientError = NewMQClient(context.TODO(), redisClient)
-	topic, topicError = client.NewTopic("test")
-	gmt, gmtError = client.NewGroupedMessageTopic("test")
+	topic, topicError = client.NewTopic("test", nil)
+	gmt, gmtError = client.NewGroupedMessageTopic("test", nil)
 }
 
 func TestMain(m *testing.M) {
@@ -31,7 +36,7 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-func TestNewMQClient(t *testing.T) {
+func TestRediMQNewMQClient(t *testing.T) {
 	// mock.ExpectCommand("FCALL","LOAD","*")
 	// if clientError != nil {
 	// 	t.Error("Client creation errored", clientError)

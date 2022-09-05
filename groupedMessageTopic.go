@@ -1,7 +1,10 @@
 package redimq
 
 import (
+	"fmt"
 	"time"
+	
+	// "github.com/go-redis/redis/v8"
 )
 
 // GroupedMessageTopic is used for interacting with Grouped Message Topics. It is created using
@@ -11,7 +14,7 @@ import (
 // #Example for publishing messages:
 //	
 // 	func Main() {
-//		gmt, err := client.NewGroupedMessageTopic("testQueue")
+//		gmt, err := client.NewGroupedMessageTopic("testQueue", options)
 // 		if err == nil {
 //			gmt.PublishMessage(message)
 //		}
@@ -20,16 +23,13 @@ import (
 // #Example for consuming messages in a loop:
 //	
 // 	func Main() {
-//		gmt, err := client.NewGroupedMessageTopic("testQueue")
+//		gmt, err := client.NewGroupedMessageTopic("testQueue", options)
 // 		if err != nil {
 //			for {
-//				msgGroup, err := gmt.GetAndLockMessageGroup(consumerGroupName, consumerName)
-//				if err == nil && msgGroup != nil {
-//					for { // Loop till you do not get a msg back
-//						msg, err := msgGroup.ConsumeMessage()
-//						if err != nil && msg == nil {
-//							break;
-//						}
+//				msgs, err := gmt.ConsumeMessages(consumerGroupName, consumerName)
+//				if err == nil && len(msgs) > 0 {
+//					for _,msg := range msgs { // Loop to process each message
+//						// TODO to process each message
 //					}
 //				}
 //			}
@@ -37,53 +37,155 @@ import (
 //	}
 //
 type GroupedMessageTopic struct {
-	MessageGroupStreamKey string
+	MessageGroupStreamKey string // redimq:gmts:test:messagegroups
+	StreamPrefix string // redimq:gmts:test
+	MessageCountKey string // redimq:gmts:test:messagecount
 	Name string
 	Retention *time.Duration
-	MaxLen *int64
 	MaxIdleTimeForMessages time.Duration
-	MaxIdleTimeForMessageGroups time.Duration
 	NeedsAcknowledgements bool
+	MessageKeysBeingConsumed []string
 	MQClient
 }
 
-func (t *GroupedMessageTopic) PublishMessage(groupKey string, m Message) error {
-	return nil
+func (t *GroupedMessageTopic) getStreamKeyForGroup(groupKey string) string {
+	return t.StreamPrefix + ":mg:" + groupKey + ":messages"
 }
 
-// GetAndLockMessageGroup is used to get a lock on any available Message Group. The instance of
-// [MessageGroup] returned will be used to consume messages for that specific Message Group.
-func (t *GroupedMessageTopic) GetAndLockMessageGroup(consumerGroupName string, consumerName string) (*MessageGroup, error) {
-	res, err := readNewStreamMessages(t.MQClient, consumerGroupName, consumerName, 1, t.MessageGroupStreamKey)
-	if err != nil {
-		return nil, err
-	}
-	if len(res) == 0 {
-		res, err = claimStuckStreamMessages(t.MQClient, consumerGroupName, consumerName, 1, t.MessageGroupStreamKey, t.MaxIdleTimeForMessageGroups)
-	}
-	if err != nil {
-		return nil, err
-	}
-	if len(res) == 0 {
-		return nil, nil
-	}
-	key := res[0].Values["key"].(string)
-	id := res[0].ID
+// PublishMessage is used to publish any message to the GroupedMessageTopic. The message group key
+// is some string that you want to group your messages by. Messages in the same message group will
+// be consumed in sequence. Messages in different message groups need not be process in order. The
+// differnt message groups are there to provide some parallelism in the consumers. If a single message
+// group key is used for all messages, then this would ensure order of processing, But this would also
+// lead to having only one effective consumer at a time. There is no current limit on the number of
+// message groups keys that you can have. The messages follow the retention defined during the queue 
+// creation.
+func (t *GroupedMessageTopic) PublishMessage(groupKey string, m *Message) error {
+	rc := t.MQClient.rc
+	c := t.MQClient.c
 	topic := &Topic{
-		StreamKey: "redismq:gmts:" + t.Name + ":messages:" + key,
-		Name: t.Name + ":" + key,
+		StreamKey: t.getStreamKeyForGroup(groupKey),
 		Retention: t.Retention,
-		MaxLen: t.MaxLen,
-		MaxIdleTimeForMessages: t.MaxIdleTimeForMessages,
 		NeedsAcknowledgements: t.NeedsAcknowledgements,
+		MaxIdleTimeForMessages: t.MaxIdleTimeForMessages,
 		MQClient: t.MQClient,
 	}
-	mg := &MessageGroup{
-		Id: id,
-		Key: key,
-		ConsumerGroupName: consumerGroupName,
-		ConsumerName: consumerName,
-		Topic: *topic,
+	arr := []interface{}{groupKey}
+	for k, v := range m.Data { 
+		arr = append(arr, k, v)
 	}
-	return mg, err
+	res, err := RediMQScripts.PublishToGMT.Run(c, rc, []string{topic.StreamKey, t.MessageGroupStreamKey, t.MessageCountKey}, arr).Result()
+	if err != nil {
+		return err
+	}
+	m.Id = res.(string)
+	m.Topic = *topic
+	return err
+}
+
+// ConsumeMessages is used to consume messages from the GroupedMessageTopic. This function will try obtaining a 
+// lock on the a fixed number of message groups (say N) and then consume 1 message from each group locked. The 
+// number of message group locks requested (N) depends on the total number of message groups present (MG) and 
+// the total number of consumers (C) for the consumer group (N = MG / C + 1). The function would return one 
+// message from each message group locked and having messages. So it can return a maximum of N messages and a
+// minimum  of 0 messages if none of the message groups have any messages.
+func (t *GroupedMessageTopic) ConsumeMessages(consumerGroupName string, consumerName string) ([]*Message, error) {
+	t.MQClient.createGroupAndConsumer(t.MessageGroupStreamKey, consumerGroupName, consumerName)
+	var msgs []*Message
+	count := t.getGroupCountPerConsumer(t.Name, consumerGroupName, consumerName, t.MessageGroupStreamKey)
+	res, err := reclaimMessageGroup(t.MQClient, consumerGroupName, consumerName, count, t.MessageGroupStreamKey)
+	if err != nil {
+		return nil, err
+	}
+	mgs := xMessageArrayToMessageGroupArray(res, *t, consumerGroupName, consumerName)
+	lessCount := count - int64(len(mgs))
+	if lessCount > 0 {
+		res, err = readNewMessageFromStream(t.MQClient, consumerGroupName, consumerName, count, t.MessageGroupStreamKey)
+		if err != nil {
+			return nil, err
+		}
+		mgs = append(mgs, xMessageArrayToMessageGroupArray(res, *t, consumerGroupName, consumerName)...)
+		lessCount = count - int64(len(mgs))
+		if lessCount > 0 {
+			res, err = claimStuckStreamMessages(t.MQClient, consumerGroupName, consumerName, lessCount, t.MessageGroupStreamKey, t.MaxIdleTimeForMessages)
+			if err != nil {
+				return nil, err
+			}
+			mgs = append(mgs, xMessageArrayToMessageGroupArray(res, *t, consumerGroupName, consumerName)...)
+		}
+	}
+	streamKeys := []string{}
+	for _,g :=  range mgs {
+		t.MQClient.rc.XGroupCreate(t.MQClient.c, t.getStreamKeyForGroup(g.Key), consumerGroupName, "0").Result()
+		res, err := claimStuckStreamMessages(t.MQClient, consumerGroupName, consumerName, 1, t.getStreamKeyForGroup(g.Key), t.MaxIdleTimeForMessages)
+		if err == nil && res != nil && len(res) > 0 {
+			topic := &Topic{
+				StreamKey: t.getStreamKeyForGroup(g.Key),
+				Name: "",
+				Retention: t.Retention,
+				MaxIdleTimeForMessages: t.MaxIdleTimeForMessages,
+				NeedsAcknowledgements: t.NeedsAcknowledgements,
+				MQClient: t.MQClient,
+			}
+			msgs = xMessageArrayToMessageArray(res, *topic, consumerGroupName, consumerName)
+		} else {
+			streamKeys = append(streamKeys, t.getStreamKeyForGroup(g.Key))
+		}
+	}
+	if len(streamKeys) > 0 {
+		streamMsgs, err := readNewStreamMessages(t.MQClient, consumerGroupName, consumerName, 1, streamKeys)
+		if err == nil {
+			for _, m := range streamMsgs {
+				topic := &Topic{
+					StreamKey: m.Stream,
+					Name: "",
+					Retention: t.Retention,
+					MaxIdleTimeForMessages: t.MaxIdleTimeForMessages,
+					NeedsAcknowledgements: t.NeedsAcknowledgements,
+					MQClient: t.MQClient,
+				}
+				msgs = append(msgs, xMessageToMessage(m.Messages[0], *topic, consumerGroupName, consumerName))
+			}
+		}
+	}
+	fmt.Printf("Group: %s, Consumer: %s, Message Group Locks Requested: %d, Message Groups Locked: %d, Messages Pulled: %d\n", 
+				consumerGroupName, consumerName, count, len(mgs), len(msgs))
+	return msgs, err
+}
+
+func (t *GroupedMessageTopic) CleanupOfTopicAndMessageGroups() {
+	start := "-"
+	for {
+		res, err := t.MQClient.rc.XRange(t.MQClient.c, t.MessageGroupStreamKey, start, "+").Result()
+		if err != nil {
+			println("Iterating message groups error - ", err.Error())
+		}
+		for _,m := range res {
+			RediMQScripts.DeleteMessageGroupIfEmpty.Run(t.MQClient.c, t.MQClient.rc,
+				[]string{t.MessageGroupStreamKey, t.getStreamKeyForGroup(m.Values["key"].(string))},
+				[]interface{}{m.ID},
+			)
+		}
+	}
+
+}
+
+func (t *GroupedMessageTopic) getActiveConsumerCountPerGroup(stream string, consumerGroupName string, consumerName string) int {
+	count := 1
+	res, err := t.MQClient.rc.XInfoConsumers(t.MQClient.c, stream, consumerGroupName).Result()
+	if err != nil {
+		println("xinfo consumers error - ", err.Error())
+	}
+	for _,c := range res {
+		if c.Name != consumerName && c.Idle < int64(t.MaxIdleTimeForMessages / time.Millisecond) {
+			count = count + 1
+		}
+	}
+	return count
+}
+
+func (t *GroupedMessageTopic) getGroupCountPerConsumer(topicName string, consumerGroupName string, consumerName string, messageGroupKey string) int64 {
+	consumerCount := t.getActiveConsumerCountPerGroup(messageGroupKey, consumerGroupName, consumerName)
+	res, _ := t.MQClient.rc.XLen(t.MQClient.c, messageGroupKey).Result()
+	return res/int64(consumerCount) + 1
 }
