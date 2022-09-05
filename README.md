@@ -11,3 +11,6 @@ RediMQ Supports two types of queues:
     be done using the [GroupedMessageTopic] struct.
 
 The library leverages the REDIS Streams internally to provide the message queue features.
+
+### pkg.go.dev documentation
+https://pkg.go.dev/github.com/webbytes/redimq
