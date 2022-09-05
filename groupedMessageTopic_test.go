@@ -50,3 +50,7 @@ func TestGMTConsumeMessages(t *testing.T) {
 	}
 	fmt.Println("messages consumed - ", *msgs[0])
 }
+
+func TestGMTCleanupTopicAndMessageGroups(t *testing.T) {
+	gmt.CleanupOfTopicAndMessageGroups()
+}

@@ -160,11 +160,18 @@ func (t *GroupedMessageTopic) CleanupOfTopicAndMessageGroups() {
 		if err != nil {
 			println("Iterating message groups error - ", err.Error())
 		}
+		if len(res) == 0 {
+			return
+		}
 		for _,m := range res {
-			RediMQScripts.DeleteMessageGroupIfEmpty.Run(t.MQClient.c, t.MQClient.rc,
+			_,err = RediMQScripts.DeleteMessageGroupIfEmpty.Run(t.MQClient.c, t.MQClient.rc,
 				[]string{t.MessageGroupStreamKey, t.getStreamKeyForGroup(m.Values["key"].(string))},
 				[]interface{}{m.ID},
-			)
+			).Result()
+			if err != nil {
+				println("Deleting Messge Group error - ", err.Error())
+			}
+			start = "(" + m.ID
 		}
 	}
 
