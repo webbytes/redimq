@@ -3,29 +3,31 @@ package redimq
 import (
 	"fmt"
 	"time"
+
 	"github.com/go-redis/redis/v8"
 )
 
 type Topic struct {
-	StreamKey string
-	Name string
-	Retention *time.Duration
-	MaxLen *int64
+	StreamKey              string
+	Name                   string
+	Retention              *time.Duration
+	MaxLen                 *int64
 	MaxIdleTimeForMessages time.Duration
-	NeedsAcknowledgements bool
+	NeedsAcknowledgements  bool
 	MQClient
 }
 
 func getMinId(ts time.Duration) string {
 	return fmt.Sprint(time.Now().Add(-1 * ts).UnixMilli())
 }
-/// execute XADD queue:messages:MESSAGE_KEY MAXLEN ~ 10000 * <...data>
+
+// / execute XADD queue:messages:MESSAGE_KEY MAXLEN ~ 10000 * <...data>
 func (t *Topic) PublishMessage(m *Message) error {
 	args := &redis.XAddArgs{
-		Stream: t.StreamKey,
-		Values: m.Data,
+		Stream:     t.StreamKey,
+		Values:     m.Data,
 		NoMkStream: false,
-		ID: "*",
+		ID:         "*",
 	}
 	if t.Retention != nil {
 		args.MinID = getMinId(*t.Retention)
@@ -42,15 +44,11 @@ func (t *Topic) PublishMessage(m *Message) error {
 }
 
 func (t *Topic) Delete() error {
-	_,err := t.MQClient.rc.Do(t.MQClient.c, "FCALL", "Delete").Result()
+	_, err := t.MQClient.rc.Do(t.MQClient.c, "FCALL", "Delete").Result()
 	return err
 }
 
 func (t *Topic) ConsumeMessages(consumerGroupName string, consumerName string, count int64) ([]*Message, error) {
-	_, err := t.MQClient.rc.XGroupCreate(t.MQClient.c, t.StreamKey, consumerGroupName, "0-0").Result()
-	if err != nil {
-		println("group creation error - ", err.Error())
-	}
 	res, err := claimStuckStreamMessages(t.MQClient, consumerGroupName, consumerName, count, t.StreamKey, t.MaxIdleTimeForMessages)
 	if err != nil {
 		println("claim stuck message error - ", err.Error())

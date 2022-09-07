@@ -2,23 +2,23 @@ package redimq
 
 import (
 	"time"
+
 	"github.com/go-redis/redis/v8"
 )
 
-
 func readNewMessageFromStream(client MQClient, consumerGroupName string, consumerName string, count int64, stream string) ([]redis.XMessage, error) {
 	args := &redis.XReadGroupArgs{
-		Group: consumerGroupName,
+		Group:    consumerGroupName,
 		Consumer: consumerName,
-		Count: count,
-		Block: -1,
-		Streams: []string{stream, ">"},
+		Count:    count,
+		Block:    -1,
+		Streams:  []string{stream, ">"},
 	}
 	res, err := client.rc.XReadGroup(client.c, args).Result()
 	if err != nil && err.Error() != "redis: nil" {
 		return nil, err
-	}	
-	if res == nil || len(res) == 0 || res[0].Messages == nil {
+	}
+	if len(res) == 0 || res[0].Messages == nil {
 		return []redis.XMessage{}, nil
 	}
 	return res[0].Messages, nil
@@ -26,20 +26,20 @@ func readNewMessageFromStream(client MQClient, consumerGroupName string, consume
 
 func readNewStreamMessages(client MQClient, consumerGroupName string, consumerName string, count int64, streams []string) ([]redis.XStream, error) {
 	streamKeys := streams
-	for _,_ = range streams {
+	for _, _ = range streams {
 		streamKeys = append(streamKeys, ">")
 	}
 	args := &redis.XReadGroupArgs{
-		Group: consumerGroupName,
+		Group:    consumerGroupName,
 		Consumer: consumerName,
-		Count: count,
-		Streams: streamKeys,
+		Count:    count,
+		Streams:  streamKeys,
 	}
 	res, err := client.rc.XReadGroup(client.c, args).Result()
 	if err != nil {
 		return nil, err
 	}
-	if res == nil || len(res) == 0 || res[0].Messages == nil {
+	if len(res) == 0 || res[0].Messages == nil {
 		return []redis.XStream{}, nil
 	}
 	return res, nil
@@ -47,19 +47,19 @@ func readNewStreamMessages(client MQClient, consumerGroupName string, consumerNa
 
 func claimStuckStreamMessages(client MQClient, consumerGroupName string, consumerName string, count int64, stream string, idle time.Duration) ([]redis.XMessage, error) {
 	args := &redis.XAutoClaimArgs{
-		Stream: stream,
-		Group: consumerGroupName,
+		Stream:   stream,
+		Group:    consumerGroupName,
 		Consumer: consumerName,
-		Count: count,
-		Start: "-",
-		MinIdle: idle,
+		Count:    count,
+		Start:    "-",
+		MinIdle:  idle,
 	}
 	res, a, err := client.rc.XAutoClaim(client.c, args).Result()
 	if err != nil {
-		println("XAutoClaim", err.Error(), a )
+		println("XAutoClaim", err.Error(), a)
 		return nil, err
 	}
-	if res == nil || len(res) == 0 {
+	if len(res) == 0 {
 		return []redis.XMessage{}, nil
 	}
 	return res, err
@@ -67,8 +67,8 @@ func claimStuckStreamMessages(client MQClient, consumerGroupName string, consume
 
 func reclaimMessageGroup(client MQClient, consumerGroupName string, consumerName string, count int64, stream string) ([]redis.XMessage, error) {
 	msgs := []redis.XMessage{}
-	res, err := RediMQScripts.ReclaimMessageGroup.Run(client.c, client.rc, 
-		[]string{stream}, 
+	res, err := RediMQScripts.ReclaimMessageGroup.Run(client.c, client.rc,
+		[]string{stream},
 		[]interface{}{consumerGroupName, consumerName, count}).Result()
 	if err != nil {
 		return nil, err
@@ -76,11 +76,11 @@ func reclaimMessageGroup(client MQClient, consumerGroupName string, consumerName
 	if res == nil || len(res.([]interface{})) == 0 {
 		return msgs, nil
 	}
-	for _,m := range res.([]interface{}) {
+	for _, m := range res.([]interface{}) {
 		v := make(map[string]interface{})
 		v["key"] = m.([]interface{})[1].([]interface{})[1]
 		msg := &redis.XMessage{
-			ID: m.([]interface{})[0].(string),
+			ID:     m.([]interface{})[0].(string),
 			Values: v,
 		}
 		msgs = append(msgs, *msg)
@@ -89,50 +89,54 @@ func reclaimMessageGroup(client MQClient, consumerGroupName string, consumerName
 }
 
 func xMessageToMessage(s redis.XMessage, t Topic, consumerGroupName string, consumerName string) *Message {
-	return &Message {
-		Id: s.ID,
-		Data: s.Values,
-		Topic: t,
+	groupKey := ""
+	if val, ok := s.Values["key"]; ok {
+		groupKey = val.(string)
+	}
+	return &Message{
+		GroupKey:          groupKey,
+		Id:                s.ID,
+		Data:              s.Values,
+		Topic:             t,
 		ConsumerGroupName: consumerGroupName,
-		ConsumerName: consumerName,
+		ConsumerName:      consumerName,
 	}
 }
 
 func xMessageArrayToMessageArray(xms []redis.XMessage, t Topic, consumerGroupName string, consumerName string) []*Message {
 	msgs := make([]*Message, len(xms))
-	for i,s := range xms {
+	for i, s := range xms {
 		msgs[i] = xMessageToMessage(s, t, consumerGroupName, consumerName)
 	}
 	return msgs
 }
 
-func xMessageToMessageGroup(s redis.XMessage, t GroupedMessageTopic, consumerGroupName string, consumerName string) *MessageGroup {
-	topic := &Topic{
-		StreamKey: t.getStreamKeyForGroup(s.Values["key"].(string)),
-		Name: "",
-		Retention: t.Retention,
-		MaxIdleTimeForMessages: t.MaxIdleTimeForMessages,
-		NeedsAcknowledgements: t.NeedsAcknowledgements,
-		MQClient: t.MQClient,
+// func xMessageToMessageGroup(s redis.XMessage, t GroupedMessageTopic, consumerGroupName string, consumerName string) *MessageGroup {
+// 	topic := &Topic{
+// 		StreamKey: t.getStreamKeyForGroup(s.Values["key"].(string)),
+// 		Name: "",
+// 		Retention: t.Retention,
+// 		MaxIdleTimeForMessages: t.MaxIdleTimeForMessages,
+// 		NeedsAcknowledgements: t.NeedsAcknowledgements,
+// 		MQClient: t.MQClient,
 
-	}
-	return &MessageGroup {
-		Id: s.ID,
-		Key: s.Values["key"].(string),
-		Topic: *topic,
-		ConsumerGroupName: consumerGroupName,
-		ConsumerName: consumerName,
-	}
-}
+// 	}
+// 	return &MessageGroup {
+// 		Id: s.ID,
+// 		Key: s.Values["key"].(string),
+// 		Topic: *topic,
+// 		ConsumerGroupName: consumerGroupName,
+// 		ConsumerName: consumerName,
+// 	}
+// }
 
-func xMessageArrayToMessageGroupArray(xms []redis.XMessage, t GroupedMessageTopic, consumerGroupName string, consumerName string) []*MessageGroup {
-	msgs := make([]*MessageGroup, len(xms))
-	for i,s := range xms {
-		msgs[i] = xMessageToMessageGroup(s, t, consumerGroupName, consumerName)
-	}
-	return msgs
-}
-
+// func xMessageArrayToMessageGroupArray(xms []redis.XMessage, t GroupedMessageTopic, consumerGroupName string, consumerName string) []*MessageGroup {
+// 	msgs := make([]*MessageGroup, len(xms))
+// 	for i,s := range xms {
+// 		msgs[i] = xMessageToMessageGroup(s, t, consumerGroupName, consumerName)
+// 	}
+// 	return msgs
+// }
 
 // func xMessageArrayToMessageGroups(xms []redis.XMessage, t GroupedMessageTopic, consumerGroupName string, consumerName string) []*MessageGroups {
 // 	msgs := make([]*MessageGroup, len(xms))
