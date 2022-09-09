@@ -92,14 +92,7 @@ func (t *GroupedMessageTopic) getTopic() *Topic {
 	}
 }
 
-// ConsumeMessages is used to consume messages from the GroupedMessageTopic. This function will try obtaining a
-// lock on the a fixed number of message groups (say N) and then consume 1 message from each group locked. The
-// number of message group locks requested (N) depends on the total number of message groups present (MG) and
-// the total number of consumers (C) for the consumer group (N = MG / C + 1). The function would return one
-// message from each message group locked and having messages. So it can return a maximum of N messages and a
-// minimum  of 0 messages if none of the message groups have any messages.
-func (t *GroupedMessageTopic) ConsumeMessages(consumerGroupName string, consumerName string) ([]*Message, error) {
-	var msgs []*Message
+func (t *GroupedMessageTopic) lockMessageGroups(consumerGroupName string, consumerName string) ([]*Message, error) {
 	count := t.getGroupCountPerConsumer(t.Name, consumerGroupName, consumerName, t.MessageGroupStreamKey)
 	res, err := reclaimMessageGroup(t.MQClient, consumerGroupName, consumerName, count, t.MessageGroupStreamKey)
 	if err != nil {
@@ -122,6 +115,20 @@ func (t *GroupedMessageTopic) ConsumeMessages(consumerGroupName string, consumer
 			mgs = append(mgs, xMessageArrayToMessageArray(res, *t.getTopic(), consumerGroupName, consumerName)...)
 		}
 	}
+	fmt.Printf("Group: %s, Consumer: %s, Message Group Locks Requested: %d, Message Groups Locked: %d",
+		consumerGroupName, consumerName, count, len(mgs))
+	return mgs, err
+}
+
+// ConsumeMessages is used to consume messages from the GroupedMessageTopic. This function will try obtaining a
+// lock on the a fixed number of message groups (say N) and then consume 1 message from each group locked. The
+// number of message group locks requested (N) depends on the total number of message groups present (MG) and
+// the total number of consumers (C) for the consumer group (N = MG / C + 1). The function would return one
+// message from each message group locked and having messages. So it can return a maximum of N messages and a
+// minimum  of 0 messages if none of the message groups have any messages.
+func (t *GroupedMessageTopic) ConsumeMessages(consumerGroupName string, consumerName string) ([]*Message, error) {
+	mgs, err := t.lockMessageGroups(consumerGroupName, consumerName)
+	var msgs []*Message
 	streamKeys := []string{}
 	for _, g := range mgs {
 		t.MQClient.rc.XGroupCreate(t.MQClient.c, t.getStreamKeyForGroup(g.GroupKey), consumerGroupName, "0").Result()
@@ -156,8 +163,56 @@ func (t *GroupedMessageTopic) ConsumeMessages(consumerGroupName string, consumer
 			}
 		}
 	}
-	fmt.Printf("Group: %s, Consumer: %s, Message Group Locks Requested: %d, Message Groups Locked: %d, Messages Pulled: %d\n",
-		consumerGroupName, consumerName, count, len(mgs), len(msgs))
+	fmt.Printf("Group: %s, Consumer: %s, Messages Pulled: %d\n",
+		consumerGroupName, consumerName, len(msgs))
+	return msgs, err
+}
+
+// ConsumeMessages is used to consume messages from the GroupedMessageTopic. This function will try obtaining a
+// lock on the a fixed number of message groups (say N) and then consume 1 message from each group locked. The
+// number of message group locks requested (N) depends on the total number of message groups present (MG) and
+// the total number of consumers (C) for the consumer group (N = MG / C + 1). The function would return one
+// message from each message group locked and having messages. So it can return a maximum of N messages and a
+// minimum  of 0 messages if none of the message groups have any messages.
+func (t *GroupedMessageTopic) ConsumeMessagesInBatches(consumerGroupName string, consumerName string, batchSize int64) ([][]*Message, error) {
+	mgs, err := t.lockMessageGroups(consumerGroupName, consumerName)
+	msgs := [][]*Message{}
+	streamKeys := []string{}
+	for _, g := range mgs {
+		t.MQClient.rc.XGroupCreate(t.MQClient.c, t.getStreamKeyForGroup(g.GroupKey), consumerGroupName, "0").Result()
+		res, err := claimStuckStreamMessages(t.MQClient, consumerGroupName, consumerName, batchSize, t.getStreamKeyForGroup(g.GroupKey), t.MaxIdleTimeForMessages)
+		if err == nil && res != nil && len(res) > 0 {
+			topic := &Topic{
+				StreamKey:              t.getStreamKeyForGroup(g.GroupKey),
+				Name:                   "",
+				Retention:              t.Retention,
+				MaxIdleTimeForMessages: t.MaxIdleTimeForMessages,
+				NeedsAcknowledgements:  t.NeedsAcknowledgements,
+				MQClient:               t.MQClient,
+			}
+			msgs = append(msgs, xMessageArrayToMessageArray(res, *topic, consumerGroupName, consumerName))
+		} else {
+			streamKeys = append(streamKeys, t.getStreamKeyForGroup(g.GroupKey))
+		}
+	}
+	if len(streamKeys) > 0 {
+		streamMsgs, err := readNewStreamMessages(t.MQClient, consumerGroupName, consumerName, batchSize, streamKeys)
+		if err == nil {
+			for _, m := range streamMsgs {
+				topic := &Topic{
+					StreamKey:              m.Stream,
+					Name:                   "",
+					Retention:              t.Retention,
+					MaxIdleTimeForMessages: t.MaxIdleTimeForMessages,
+					NeedsAcknowledgements:  t.NeedsAcknowledgements,
+					MQClient:               t.MQClient,
+				}
+				msgs = append(msgs, xMessageArrayToMessageArray(m.Messages, *topic, consumerGroupName, consumerName))
+			}
+		}
+	}
+	fmt.Printf("Group: %s, Consumer: %s, Message Batches Pulled: %d\n",
+		consumerGroupName, consumerName, len(msgs))
 	return msgs, err
 }
 

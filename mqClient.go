@@ -74,13 +74,12 @@ func (c *MQClient) NewGroupedMessageTopic(name string, options *TopicOptions) (*
 }
 
 func (c *MQClient) NewConsumer(consumerGroupName string, consumerName string, handler func(*Message)) *Consumer {
-	msgs := make(chan *Message, 1)
 	return &Consumer{
 		ConsumerGroupName: consumerGroupName,
 		ConsumerName:      consumerName,
 		Handler:           handler,
 		Errors:            make(chan error),
-		Messages:          msgs,
+		inProgressTopic:   map[string]bool{},
 	}
 }
 func (c *MQClient) createGroupAndConsumer(stream string, consumerGroupName string, consumerName string) error {
