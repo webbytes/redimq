@@ -4,7 +4,8 @@ import (
 	"fmt"
 	"math"
 	"time"
-	// "github.com/go-redis/redis/v8"
+
+	"github.com/go-redis/redis/v8"
 )
 
 // GroupedMessageTopic is used for interacting with Grouped Message Topics. It is created using
@@ -25,6 +26,7 @@ import (
 //	func Main() {
 //		gmt, err := client.NewGroupedMessageTopic("testQueue", options)
 //		if err != nil {
+//			res, err := gmt.InitializeConsumer(consumerGroupName, consumerName)
 //			for {
 //				msgs, err := gmt.ConsumeMessages(consumerGroupName, consumerName)
 //				if err == nil && len(msgs) > 0 {
@@ -36,7 +38,8 @@ import (
 //		}
 //	}
 type GroupedMessageTopic struct {
-	MessageGroupStreamKey    string // redimq:gmts:test:messagegroups
+	MessageGroupStreamKey    string // {redimq:gmts:test}:messagegroups
+	MessageGroupSetKey       string // {redimq:gmts:test}:messagegroupset
 	StreamPrefix             string // redimq:gmts:test
 	MessageCountKey          string // redimq:gmts:test:messagecount
 	Name                     string
@@ -70,14 +73,16 @@ func (t *GroupedMessageTopic) PublishMessage(groupKey string, m *Message) error 
 		MQClient:               t.MQClient,
 	}
 	arr := []interface{}{groupKey}
-	for k, v := range m.Data {
-		arr = append(arr, k, v)
-	}
-	res, err := RediMQScripts.PublishToGMT.Run(c, rc, []string{topic.StreamKey, t.MessageGroupStreamKey, t.MessageCountKey}, arr).Result()
+	_, err := RediMQScripts.PublishToGMT.Run(c, rc, []string{topic.StreamKey, t.MessageGroupStreamKey, t.MessageCountKey}, arr).Result()
 	if err != nil {
 		return err
 	}
-	m.Id = res.(string)
+	res, err := rc.XAdd(c, &redis.XAddArgs{
+		Stream: topic.StreamKey,
+		Values: m.Data,
+		ID:     "*",
+	}).Result()
+	m.Id = res
 	m.Topic = *topic
 	return err
 }
@@ -92,10 +97,17 @@ func (t *GroupedMessageTopic) getTopic() *Topic {
 	}
 }
 
+func (t *GroupedMessageTopic) InitializeConsumer(consumerGroupName string, consumerName string) (string, error) {
+	gres, err := t.MQClient.rc.XGroupCreateMkStream(t.MQClient.c, t.MessageGroupStreamKey, consumerGroupName, "0").Result()
+	cres, err := t.MQClient.rc.XGroupCreateConsumer(t.MQClient.c, t.MessageGroupStreamKey, consumerGroupName, consumerName).Result()
+	return fmt.Sprintf("%s, %d", gres, cres), err
+}
+
 func (t *GroupedMessageTopic) lockMessageGroups(consumerGroupName string, consumerName string) ([]*Message, error) {
 	count := t.getGroupCountPerConsumer(t.Name, consumerGroupName, consumerName, t.MessageGroupStreamKey)
 	res, err := reclaimMessageGroup(t.MQClient, consumerGroupName, consumerName, count, t.MessageGroupStreamKey)
 	if err != nil {
+		fmt.Print("Error reclaiming message groups: ", err)
 		return nil, err
 	}
 	mgs := xMessageArrayToMessageArray(res, *t.getTopic(), consumerGroupName, consumerName)
@@ -103,6 +115,7 @@ func (t *GroupedMessageTopic) lockMessageGroups(consumerGroupName string, consum
 	if lessCount > 0 {
 		res, err = readNewMessageFromStream(t.MQClient, consumerGroupName, consumerName, count, t.MessageGroupStreamKey)
 		if err != nil {
+			fmt.Print("Error reading new message groups: ", err)
 			return nil, err
 		}
 		mgs = append(mgs, xMessageArrayToMessageArray(res, *t.getTopic(), consumerGroupName, consumerName)...)
@@ -110,13 +123,14 @@ func (t *GroupedMessageTopic) lockMessageGroups(consumerGroupName string, consum
 		if lessCount > 0 {
 			res, err = claimStuckStreamMessages(t.MQClient, consumerGroupName, consumerName, lessCount, t.MessageGroupStreamKey, t.MaxIdleTimeForMessages)
 			if err != nil {
+				fmt.Print("Error claiming stuck message groups: ", err)
 				return nil, err
 			}
 			mgs = append(mgs, xMessageArrayToMessageArray(res, *t.getTopic(), consumerGroupName, consumerName)...)
 		}
 	}
-	fmt.Printf("Group: %s, Consumer: %s, Message Group Locks Requested: %d, Message Groups Locked: %d",
-		consumerGroupName, consumerName, count, len(mgs))
+	// fmt.Printf("Group: %s, Consumer: %s, Message Group Locks Requested: %d, Message Groups Locked: %d",
+	// 	consumerGroupName, consumerName, count, len(mgs))
 	return mgs, err
 }
 
@@ -129,10 +143,18 @@ func (t *GroupedMessageTopic) lockMessageGroups(consumerGroupName string, consum
 func (t *GroupedMessageTopic) ConsumeMessages(consumerGroupName string, consumerName string) ([]*Message, error) {
 	mgs, err := t.lockMessageGroups(consumerGroupName, consumerName)
 	var msgs []*Message
-	streamKeys := []string{}
 	for _, g := range mgs {
 		t.MQClient.rc.XGroupCreate(t.MQClient.c, t.getStreamKeyForGroup(g.GroupKey), consumerGroupName, "0").Result()
+		t.MQClient.rc.XGroupCreateConsumer(t.MQClient.c, t.getStreamKeyForGroup(g.GroupKey), consumerGroupName, consumerName).Result()
 		res, err := claimStuckStreamMessages(t.MQClient, consumerGroupName, consumerName, 1, t.getStreamKeyForGroup(g.GroupKey), t.MaxIdleTimeForMessages)
+		if err != nil {
+			fmt.Print("Error claiming stuck messages for "+g.GroupKey+": ", err)
+		} else if res == nil || len(res) == 0 {
+			res, err = readNewMessageFromStream(t.MQClient, consumerGroupName, consumerName, 1, t.getStreamKeyForGroup(g.GroupKey))
+			if err != nil {
+				fmt.Print("Error reading new message for "+g.GroupKey+": ", err)
+			}
+		}
 		if err == nil && res != nil && len(res) > 0 {
 			topic := &Topic{
 				StreamKey:              t.getStreamKeyForGroup(g.GroupKey),
@@ -142,29 +164,11 @@ func (t *GroupedMessageTopic) ConsumeMessages(consumerGroupName string, consumer
 				NeedsAcknowledgements:  t.NeedsAcknowledgements,
 				MQClient:               t.MQClient,
 			}
-			msgs = xMessageArrayToMessageArray(res, *topic, consumerGroupName, consumerName)
-		} else {
-			streamKeys = append(streamKeys, t.getStreamKeyForGroup(g.GroupKey))
+			msgs = append(msgs, xMessageArrayToMessageArray(res, *topic, consumerGroupName, consumerName)...)
 		}
 	}
-	if len(streamKeys) > 0 {
-		streamMsgs, err := readNewStreamMessages(t.MQClient, consumerGroupName, consumerName, 1, streamKeys)
-		if err == nil {
-			for _, m := range streamMsgs {
-				topic := &Topic{
-					StreamKey:              m.Stream,
-					Name:                   "",
-					Retention:              t.Retention,
-					MaxIdleTimeForMessages: t.MaxIdleTimeForMessages,
-					NeedsAcknowledgements:  t.NeedsAcknowledgements,
-					MQClient:               t.MQClient,
-				}
-				msgs = append(msgs, xMessageToMessage(m.Messages[0], *topic, consumerGroupName, consumerName))
-			}
-		}
-	}
-	fmt.Printf("Group: %s, Consumer: %s, Messages Pulled: %d\n",
-		consumerGroupName, consumerName, len(msgs))
+	// fmt.Printf("Group: %s, Consumer: %s, Messages Pulled: %d\n",
+	// 	consumerGroupName, consumerName, len(msgs))
 	return msgs, err
 }
 

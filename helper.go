@@ -1,6 +1,7 @@
 package redimq
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/go-redis/redis/v8"
@@ -46,23 +47,42 @@ func readNewStreamMessages(client MQClient, consumerGroupName string, consumerNa
 }
 
 func claimStuckStreamMessages(client MQClient, consumerGroupName string, consumerName string, count int64, stream string, idle time.Duration) ([]redis.XMessage, error) {
-	args := &redis.XAutoClaimArgs{
-		Stream:   stream,
-		Group:    consumerGroupName,
-		Consumer: consumerName,
-		Count:    count,
-		Start:    "-",
-		MinIdle:  idle,
+	var msgs []redis.XMessage
+	args := &redis.XPendingExtArgs{
+		Stream: stream,
+		Group:  consumerGroupName,
+		Count:  count,
+		Start:  "-",
+		End:    "+",
+		Idle:   idle,
 	}
-	res, a, err := client.rc.XAutoClaim(client.c, args).Result()
+	res, err := client.rc.XPendingExt(client.c, args).Result()
 	if err != nil {
-		println("XAutoClaim", err.Error(), a)
+		fmt.Print("XPending: ", err.Error())
 		return nil, err
+	}
+	if len(res) > 0 {
+		ids := make([]string, len(res))
+		for i, m := range res {
+			ids[i] = m.ID
+		}
+		args := &redis.XClaimArgs{
+			Stream:   stream,
+			Group:    consumerGroupName,
+			Consumer: consumerName,
+			MinIdle:  idle,
+			Messages: ids,
+		}
+		msgs, err = client.rc.XClaim(client.c, args).Result()
+		if err != nil {
+			fmt.Print("XClaim: ", err)
+			return nil, err
+		}
 	}
 	if len(res) == 0 {
 		return []redis.XMessage{}, nil
 	}
-	return res, err
+	return msgs, err
 }
 
 func reclaimMessageGroup(client MQClient, consumerGroupName string, consumerName string, count int64, stream string) ([]redis.XMessage, error) {

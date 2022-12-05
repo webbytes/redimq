@@ -64,7 +64,8 @@ func (c *MQClient) NewGroupedMessageTopic(name string, options *TopicOptions) (*
 	idle, err := time.ParseDuration(*options.MaxIdleTimeForMessages)
 	topic := &GroupedMessageTopic{
 		StreamPrefix:           "redimq:gmts:" + name,
-		MessageGroupStreamKey:  "redimq:gmts:" + name + ":message-groups",
+		MessageGroupStreamKey:  "{redimq:gmts:" + name + "}:message-groups",
+		MessageGroupSetKey:     "{redimq:gmts:" + name + "}:message-group-set",
 		MessageCountKey:        "redimq:gmts:" + name + ":message-count",
 		Name:                   name,
 		MQClient:               *c,

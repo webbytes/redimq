@@ -3,19 +3,19 @@ package redimq
 import (
 	"github.com/go-redis/redis/v8"
 )
+
 type ScriptKeys string
 
-// LUA Scripts that are going to be used for some of the operations that need to be atomic. These would 
+// LUA Scripts that are going to be used for some of the operations that need to be atomic. These would
 // never need to be overridden by can if needed. Overriding these could change the behaviour of the library
 // and could leave the system in a non recoverable state. Please change this only if you are absolutely sure
-// of what you are doing 
+// of what you are doing
 var (
 	LUA_publishToGMT ScriptKeys = `
-		if redis.call("EXISTS", KEYS[1]) == 0 then
+		if redis.call("SADD", KEYS[1], ARGV[1]) == 1 then
 			redis.call("XADD", KEYS[2], "*", "key", ARGV[1])
 		end
-		redis.call("INCR", KEYS[3])
-		return redis.call("XADD", KEYS[1], "*", unpack(ARGV,2))
+		return "OK"
 	`
 	LUA_reclaimMessageGroups ScriptKeys = `
 		local pending = redis.call("XPENDING", KEYS[1], ARGV[1], "-", "+", ARGV[3], ARGV[2])
@@ -40,10 +40,9 @@ var (
 	`
 )
 
-
 type Scripts struct {
-	PublishToGMT *redis.Script
-	ReclaimMessageGroup *redis.Script
+	PublishToGMT              *redis.Script
+	ReclaimMessageGroup       *redis.Script
 	DeleteMessageGroupIfEmpty *redis.Script
 }
 
@@ -51,8 +50,8 @@ var RediMQScripts *Scripts
 
 func initializeScripts() {
 	RediMQScripts = &Scripts{
-		PublishToGMT: redis.NewScript(string(LUA_publishToGMT)),
-		ReclaimMessageGroup: redis.NewScript(string(LUA_reclaimMessageGroups)),
+		PublishToGMT:              redis.NewScript(string(LUA_publishToGMT)),
+		ReclaimMessageGroup:       redis.NewScript(string(LUA_reclaimMessageGroups)),
 		DeleteMessageGroupIfEmpty: redis.NewScript(string(LUA_deleteMessageGroupIfEmpty)),
 	}
 }
