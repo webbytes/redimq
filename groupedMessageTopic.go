@@ -45,6 +45,7 @@ type GroupedMessageTopic struct {
 	Name                     string
 	Retention                *time.Duration
 	MaxIdleTimeForMessages   time.Duration
+	RebalanceInterval        time.Duration
 	NeedsAcknowledgements    bool
 	MessageKeysBeingConsumed []string
 	MQClient
@@ -149,7 +150,7 @@ func (t *GroupedMessageTopic) ConsumeMessages(consumerGroupName string, consumer
 		res, err := claimStuckStreamMessages(t.MQClient, consumerGroupName, consumerName, 1, t.getStreamKeyForGroup(g.GroupKey), t.MaxIdleTimeForMessages)
 		if err != nil {
 			fmt.Print("Error claiming stuck messages for "+g.GroupKey+": ", err)
-		} else if res == nil || len(res) == 0 {
+		} else if len(res) == 0 {
 			res, err = readNewMessageFromStream(t.MQClient, consumerGroupName, consumerName, 1, t.getStreamKeyForGroup(g.GroupKey))
 			if err != nil {
 				fmt.Print("Error reading new message for "+g.GroupKey+": ", err)
@@ -241,14 +242,30 @@ func (t *GroupedMessageTopic) CleanupOfTopicAndMessageGroups() {
 			start = "(" + m.ID
 		}
 	}
-
 }
 
-func (t *GroupedMessageTopic) getActiveConsumerCountPerGroup(stream string, consumerGroupName string, consumerName string) int {
+func (t *GroupedMessageTopic) RebalanceConsumers(consumerGroupName string, consumerName string) {
+	res, err := t.MQClient.rc.SetNX(t.MQClient.c, t.StreamPrefix+":"+consumerGroupName+":rebalancer", consumerName, t.RebalanceInterval).Result()
+	if err != nil {
+		fmt.Print("Error trying to get rebalance lock: ", err)
+	}
+	if res {
+		t.CleanupOfTopicAndMessageGroups()
+		consumerCount := t.getActiveConsumersForConsumerGroup(t.MessageGroupStreamKey, consumerGroupName, consumerName)
+		groupCount, _ := t.MQClient.rc.XLen(t.MQClient.c, t.MessageGroupStreamKey).Result()
+		groupsPerConsumer := int64(math.Ceil(float64(groupCount) / float64(consumerCount)))
+		_, err := t.MQClient.rc.Set(t.MQClient.c, t.StreamPrefix+":"+consumerGroupName+":groups-per-consumer", groupsPerConsumer, 0).Result()
+		if err != nil {
+			fmt.Print("Error trying to get rebalance lock: ", err)
+		}
+	}
+}
+
+func (t *GroupedMessageTopic) getActiveConsumersForConsumerGroup(stream string, consumerGroupName string, consumerName string) int {
 	count := 1
 	res, err := t.MQClient.rc.XInfoConsumers(t.MQClient.c, stream, consumerGroupName).Result()
 	if err != nil {
-		println("xinfo consumers error - ", err.Error())
+		fmt.Print("xinfo consumers error - ", err)
 	}
 	for _, c := range res {
 		if c.Name != consumerName && c.Idle < int64(t.MaxIdleTimeForMessages/time.Millisecond) {
@@ -259,7 +276,7 @@ func (t *GroupedMessageTopic) getActiveConsumerCountPerGroup(stream string, cons
 }
 
 func (t *GroupedMessageTopic) getGroupCountPerConsumer(topicName string, consumerGroupName string, consumerName string, messageGroupKey string) int64 {
-	consumerCount := t.getActiveConsumerCountPerGroup(messageGroupKey, consumerGroupName, consumerName)
+	consumerCount := t.getActiveConsumersForConsumerGroup(messageGroupKey, consumerGroupName, consumerName)
 	res, _ := t.MQClient.rc.XLen(t.MQClient.c, messageGroupKey).Result()
 	return int64(math.Ceil(float64(res) / float64(consumerCount)))
 }
