@@ -30,11 +30,6 @@ var (
 	//
 	// The value is a string and should be parsable by the [time.ParseDuration] function
 	DefaultMaxIdleTimeForMessage string = "5m" // Default "5m" - (5 minutes)
-
-	// RebalanceInterval defines the interval for running the rebalancing.
-	//
-	// The value is a string and should be parsable by the [time.ParseDuration] function
-	RebalanceInterval string = "5m"
 )
 
 // NewMQClient is used to get an instance of the MQClient object that can be used

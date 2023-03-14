@@ -17,20 +17,19 @@ type Topic struct {
 	MQClient
 }
 
-func getMinId(ts time.Duration) string {
-	return fmt.Sprint(time.Now().Add(-1 * ts).UnixMilli())
+func (t *Topic) getMinId() string {
+	return fmt.Sprint(time.Now().Add(-*t.Retention).UnixMilli())
 }
 
 // / execute XADD queue:messages:MESSAGE_KEY MAXLEN ~ 10000 * <...data>
 func (t *Topic) PublishMessage(m *Message) error {
 	args := &redis.XAddArgs{
-		Stream:     t.StreamKey,
-		Values:     m.Data,
-		NoMkStream: false,
-		ID:         "*",
+		Stream: t.StreamKey,
+		Values: m.Data,
+		ID:     "*",
 	}
 	if t.Retention != nil {
-		args.MinID = getMinId(*t.Retention)
+		args.MinID = t.getMinId()
 		args.Approx = true
 	}
 	if t.MaxLen != nil {
@@ -40,11 +39,6 @@ func (t *Topic) PublishMessage(m *Message) error {
 	res, err := t.MQClient.rc.XAdd(t.MQClient.c, args).Result()
 	m.Id = res
 	m.Topic = *t
-	return err
-}
-
-func (t *Topic) Delete() error {
-	_, err := t.MQClient.rc.Do(t.MQClient.c, "FCALL", "Delete").Result()
 	return err
 }
 

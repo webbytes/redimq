@@ -138,13 +138,13 @@ func (c *Consumer) StartConsumingGroupedMessageTopicInBatches(t *GroupedMessageT
 			if c.inProgressTopic["gmts"+t.Name] {
 				break
 			}
-			msgs, err := t.ConsumeMessagesInBatches(c.ConsumerGroupName, c.ConsumerName, batchSize)
-			if err != nil {
-				c.Errors <- err
-			}
-			if len(msgs) > 0 {
-				c.consumeMessagesInBatches(msgs)
-			}
+			// msgs, err := t.ConsumeMessagesInBatches(c.ConsumerGroupName, c.ConsumerName, batchSize)
+			// if err != nil {
+			// 	c.Errors <- err
+			// }
+			// if len(msgs) > 0 {
+			// 	c.consumeMessagesInBatches(msgs)
+			// }
 		}
 	}()
 	return nil

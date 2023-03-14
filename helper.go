@@ -1,7 +1,6 @@
 package redimq
 
 import (
-	"fmt"
 	"time"
 
 	"github.com/go-redis/redis/v8"
@@ -25,40 +24,27 @@ func readNewMessageFromStream(client MQClient, consumerGroupName string, consume
 	return res[0].Messages, nil
 }
 
-func readNewStreamMessages(client MQClient, consumerGroupName string, consumerName string, count int64, streams []string) ([]redis.XStream, error) {
-	streamKeys := streams
-	for _, _ = range streams {
-		streamKeys = append(streamKeys, ">")
-	}
-	args := &redis.XReadGroupArgs{
-		Group:    consumerGroupName,
-		Consumer: consumerName,
-		Count:    count,
-		Streams:  streamKeys,
-	}
-	res, err := client.rc.XReadGroup(client.c, args).Result()
-	if err != nil {
-		return nil, err
-	}
-	if len(res) == 0 || res[0].Messages == nil {
-		return []redis.XStream{}, nil
-	}
-	return res, nil
-}
-
 func claimStuckStreamMessages(client MQClient, consumerGroupName string, consumerName string, count int64, stream string, idle time.Duration) ([]redis.XMessage, error) {
+	// args := &redis.XAutoClaimArgs{
+	// 	Stream:   stream,
+	// 	Group:    consumerGroupName,
+	// 	Consumer: consumerName,
+	// 	Count:    count,
+	// 	Start:    "-",
+	// 	MinIdle:  idle,
+	// }
+	// msgs, a, err := client.rc.XAutoClaim(client.c, args).Result()
 	var msgs []redis.XMessage
-	args := &redis.XPendingExtArgs{
+	res, err := client.rc.XPendingExt(client.c, &redis.XPendingExtArgs{
 		Stream: stream,
 		Group:  consumerGroupName,
-		Count:  count,
+		Idle:   idle,
 		Start:  "-",
 		End:    "+",
-		Idle:   idle,
-	}
-	res, err := client.rc.XPendingExt(client.c, args).Result()
+		Count:  count,
+	}).Result()
 	if err != nil {
-		fmt.Print("XPending: ", err.Error())
+		println("XPending", err.Error())
 		return nil, err
 	}
 	if len(res) > 0 {
@@ -66,16 +52,15 @@ func claimStuckStreamMessages(client MQClient, consumerGroupName string, consume
 		for i, m := range res {
 			ids[i] = m.ID
 		}
-		args := &redis.XClaimArgs{
+		msgs, err = client.rc.XClaim(client.c, &redis.XClaimArgs{
 			Stream:   stream,
 			Group:    consumerGroupName,
 			Consumer: consumerName,
 			MinIdle:  idle,
 			Messages: ids,
-		}
-		msgs, err = client.rc.XClaim(client.c, args).Result()
+		}).Result()
 		if err != nil {
-			fmt.Print("XClaim: ", err)
+			println("XClaim", err.Error())
 			return nil, err
 		}
 	}

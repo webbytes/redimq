@@ -30,13 +30,9 @@ var (
 		end
 	`
 	LUA_deleteMessageGroupIfEmpty ScriptKeys = `
-		local msgCount = redis.call("XLEN", KEYS[2])
-		if msgCount == 0 then
-			redis.call("XDEL", KEYS[1], ARGV[1])
-			redis.call("DEL", KEYS[2])
-			return 1
-		end
-		return 0
+		redis.call("XDEL", KEYS[1], ARGV[1])
+		redis.call("SREM", KEYS[2], ARGV[2])
+		return 1
 	`
 )
 

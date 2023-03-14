@@ -3,14 +3,13 @@ package redimq
 import (
 	"fmt"
 	"testing"
-
 	// "github.com/go-redis/redis/v8"
 )
 
 func TestGMTPublishMessage(t *testing.T) {
-	m := &Message{Data: map[string]interface{} {"foo": "test", "bar": "test"}}
+	m := &Message{Data: map[string]interface{}{"foo": "test", "bar": "test"}}
 	// args := &redis.XAddArgs{
-	// 	Stream:"redimq:umts:" + topic.Name, 
+	// 	Stream:"redimq:umts:" + topic.Name,
 	// 	Values: m.Data,
 	// 	NoMkStream: false,
 	// }
@@ -23,7 +22,7 @@ func TestGMTPublishMessage(t *testing.T) {
 		t.Error("PublishMessage did not generate ID")
 	}
 	println(m.Id)
-} 
+}
 
 func TestGMTConsumeMessages(t *testing.T) {
 	group := "test-group"
@@ -40,7 +39,7 @@ func TestGMTConsumeMessages(t *testing.T) {
 	// 	Messages: []redis.XMessage { *msg },
 	// }
 	// mock.ExpectXReadGroup(args).SetVal([]redis.XStream { *resStream })
-	msgs,err := gmt.ConsumeMessages(group, consumer)
+	msgs, err := gmt.ConsumeMessages(group, consumer)
 	if err != nil {
 		t.Error("ConsumeMessage failed", err)
 	} else if msgs == nil {
@@ -51,6 +50,7 @@ func TestGMTConsumeMessages(t *testing.T) {
 	fmt.Println("messages consumed - ", *msgs[0])
 }
 
-func TestGMTCleanupTopicAndMessageGroups(t *testing.T) {
-	gmt.CleanupOfTopicAndMessageGroups()
+func TestGMTCleanupMessageGroupsAndConsumers(t *testing.T) {
+	group := "test-group"
+	gmt.CleanupMessageGroupsAndConsumers(group)
 }
