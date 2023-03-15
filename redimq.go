@@ -41,7 +41,6 @@ func NewMQClient(c context.Context, rc *redis.Client) (*MQClient, error) {
 }
 
 func initializeRediMQ(c context.Context, rc *redis.Client) error {
-	initializeScripts()
 	_, err := rc.Ping(c).Result()
 	if err != nil {
 		return fmt.Errorf("RediMQ initialization failed: [%w]", err)

@@ -70,25 +70,34 @@ func claimStuckStreamMessages(client MQClient, consumerGroupName string, consume
 	return msgs, err
 }
 
-func reclaimMessageGroup(client MQClient, consumerGroupName string, consumerName string, count int64, stream string) ([]redis.XMessage, error) {
-	msgs := []redis.XMessage{}
-	res, err := RediMQScripts.ReclaimMessageGroup.Run(client.c, client.rc,
-		[]string{stream},
-		[]interface{}{consumerGroupName, consumerName, count}).Result()
+func reclaimMessageGroup(client MQClient, consumerGroupName string, consumerName string, count int64, stream string, maxIdle time.Duration) ([]redis.XMessage, error) {
+	pending, err := client.rc.XPendingExt(client.c, &redis.XPendingExtArgs{
+		Stream:   stream,
+		Group:    consumerGroupName,
+		Start:    "-",
+		End:      "+",
+		Count:    count,
+		Consumer: consumerName,
+		Idle:     0,
+	}).Result()
 	if err != nil {
 		return nil, err
 	}
-	if res == nil || len(res.([]interface{})) == 0 {
-		return msgs, nil
-	}
-	for _, m := range res.([]interface{}) {
-		v := make(map[string]interface{})
-		v["key"] = m.([]interface{})[1].([]interface{})[1]
-		msg := &redis.XMessage{
-			ID:     m.([]interface{})[0].(string),
-			Values: v,
+	msgIds := []string{}
+	for i, p := range pending {
+		if p.Idle < (maxIdle - 10*time.Second) {
+			msgIds[i] = p.ID
 		}
-		msgs = append(msgs, *msg)
+	}
+	msgs, err := client.rc.XClaim(client.c, &redis.XClaimArgs{
+		Stream:   stream,
+		Group:    consumerGroupName,
+		Consumer: consumerName,
+		MinIdle:  0,
+		Messages: msgIds,
+	}).Result()
+	if err != nil {
+		return nil, err
 	}
 	return msgs, err
 }

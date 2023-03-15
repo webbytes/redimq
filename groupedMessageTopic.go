@@ -71,8 +71,24 @@ func (t *GroupedMessageTopic) PublishMessage(groupKey string, m *Message) error 
 		MaxIdleTimeForMessages: t.MaxIdleTimeForMessages,
 		MQClient:               t.MQClient,
 	}
-	arr := []interface{}{groupKey}
-	_, err := RediMQScripts.PublishToGMT.Run(c, rc, []string{t.MessageGroupSetKey, t.MessageGroupStreamKey}, arr).Result()
+	txf := func(tx *redis.Tx) error {
+		res, err := tx.SIsMember(c, t.MessageGroupSetKey, groupKey).Result()
+		if res {
+			return err
+		}
+		_, err = tx.TxPipelined(c, func(pipe redis.Pipeliner) error {
+			pipe.SAdd(c, t.MessageGroupSetKey, groupKey)
+			pipe.XAdd(c, &redis.XAddArgs{
+				Stream: t.MessageGroupStreamKey,
+				ID:     "*",
+				Values: []interface{}{"key", groupKey},
+			})
+			return nil
+		})
+		return err
+	}
+
+	err := rc.Watch(c, txf, t.MessageGroupSetKey)
 	if err != nil {
 		return err
 	}
@@ -110,7 +126,7 @@ func (t *GroupedMessageTopic) InitTopicGroups(consumerGroupName string, consumer
 
 func (t *GroupedMessageTopic) lockMessageGroups(consumerGroupName string, consumerName string) ([]*Message, error) {
 	count := t.getGroupCountPerConsumer(t.Name, consumerGroupName, consumerName, t.MessageGroupStreamKey)
-	res, err := reclaimMessageGroup(t.MQClient, consumerGroupName, consumerName, count, t.MessageGroupStreamKey)
+	res, err := reclaimMessageGroup(t.MQClient, consumerGroupName, consumerName, count, t.MessageGroupStreamKey, t.MaxIdleTimeForMessages)
 	if err != nil {
 		fmt.Print("Error reclaiming message groups: ", err)
 		res = []redis.XMessage{}
@@ -236,10 +252,10 @@ func (t *GroupedMessageTopic) CleanupMessageGroupsAndConsumers(consumerGroupName
 		return
 	}
 	for _, m := range res {
-		_, err = RediMQScripts.DeleteMessageGroupIfEmpty.Run(t.MQClient.c, t.MQClient.rc,
-			[]string{t.MessageGroupSetKey, t.MessageGroupStreamKey},
-			[]interface{}{m.ID, m.Values["key"]},
-		).Result()
+		pipe := t.MQClient.rc.TxPipeline()
+		pipe.XDel(t.MQClient.c, t.MessageGroupStreamKey, m.ID)
+		pipe.SRem(t.MQClient.c, t.MessageGroupSetKey, m.Values["key"])
+		_, err = pipe.Exec(t.MQClient.c)
 		if err != nil {
 			println("Deleting Messge Group error - ", err.Error())
 		}
